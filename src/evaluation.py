@@ -1,279 +1,268 @@
 """
-Module d'Évaluation 
-Contient les fonctions pour tester le modèle, calculer les scores (MSE, Intensité)
-et afficher les rapports de performance : ROC, P-R, et Matrices.
+Evaluation module.
+
+Functions to test the model, compute the anomaly scores (reconstruction MSE,
+total intensity) and display the performance reports: ROC, precision-recall
+and confusion matrix.
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import (classification_report, confusion_matrix, ConfusionMatrixDisplay, 
-                             roc_curve, roc_auc_score, precision_recall_curve, average_precision_score)
+import numpy as np
+from sklearn.metrics import (average_precision_score, classification_report,
+                             confusion_matrix, ConfusionMatrixDisplay,
+                             precision_recall_curve, roc_auc_score, roc_curve)
 
-def sanity_check_dataset(nom, dataset):
-    print(f"--- Diagnostic : {nom} ---")
-    
-    # Vérification de la Shape
-    print(f"Shape attendue  : (N, 740, 2)")
-    print(f"Shape actuelle  : {dataset.shape}")
-    if dataset.shape[1:] != (740, 2):
-        print("ERREUR CRITIQUE : La dimension des points ou colonnes est fausse !")
-        
-    # Vérification des NaNs et Infs
-    nb_nans = np.isnan(dataset).sum()
-    nb_infs = np.isinf(dataset).sum()
-    if nb_nans > 0 or nb_infs > 0:
-        print(f"ERREUR CRITIQUE : Contient {nb_nans} NaNs et {nb_infs} Infs !")
+CLASS_LABELS = ["Normal", "Anomaly"]
+
+
+# ====================================
+# Data checks
+# ====================================
+
+def sanity_check_dataset(name, dataset, expected_shape=(740, 2)):
+    """Print basic diagnostics (shape, NaN/Inf, intensity range) of a dataset."""
+    print(f"--- Diagnostic: {name} ---")
+
+    print(f"Expected shape : (N, {expected_shape[0]}, {expected_shape[1]})")
+    print(f"Actual shape   : {dataset.shape}")
+    if dataset.shape[1:] != expected_shape:
+        print("CRITICAL ERROR: wrong number of points or columns!")
+
+    n_nans = np.isnan(dataset).sum()
+    n_infs = np.isinf(dataset).sum()
+    if n_nans > 0 or n_infs > 0:
+        print(f"CRITICAL ERROR: contains {n_nans} NaNs and {n_infs} Infs!")
     else:
-        print("Données propres (0 NaN, 0 Inf)")
-        
-    # Vérification du Scaling (sur la colonne intensité : index 1)
-    min_int = np.min(dataset[:, :, 1])
-    max_int = np.max(dataset[:, :, 1])
-    print(f"Intensité Min   : {min_int:.4f}")
-    print(f"Intensité Max   : {max_int:.4f}")
+        print("Clean data (0 NaN, 0 Inf)")
+
+    # Scaling check (on the intensity column: index 1)
+    print(f"Min intensity  : {np.min(dataset[:, :, 1]):.4f}")
+    print(f"Max intensity  : {np.max(dataset[:, :, 1]):.4f}")
     print("\n")
 
-def verifier_visuellement(dataset, nom="Spectre Aléatoire"):
 
+def visual_check(dataset, name="Random spectrum"):
+    """Plot one random spectrum of the dataset."""
     idx = np.random.randint(0, dataset.shape[0])
-    spectre = dataset[idx]
-    
+    spectrum = dataset[idx]
+
     plt.figure(figsize=(10, 4))
-    plt.plot(spectre[:, 0], spectre[:, 1], color='blue')
-    plt.title(f"Test Visuel : {nom} (Index {idx})")
+    plt.plot(spectrum[:, 0], spectrum[:, 1], color="blue")
+    plt.title(f"Visual check: {name} (index {idx})")
     plt.xlabel("m/z")
-    plt.ylabel("Intensité (Normalisée)")
+    plt.ylabel("Intensity (scaled)")
     plt.grid(True, alpha=0.3)
     plt.show()
 
-def evaluer_ia_seule_multiclasse_hybride(X_norm, X_mass, X_low, modele_ae, seuil_mse=0.0004, seuil_int=310):
+
+# ====================================
+# Scores
+# ====================================
+
+def compute_scores(model, X):
     """
-    Génère un tableau de bord à 6 graphiques pour analyser le comportement 
-    de l'IA face aux données Saines, Mass Shifts et Low Intensity.
+    Compute, for each spectrum of X:
+      - the reconstruction MSE (shape error),
+      - the total intensity (signal volume).
     """
-    print("Calcul des prédictions (MSE et Intensité) en cours...")
-    
-    # 1. Calcul des MSE (Erreur de forme)
-    mse_norm = np.mean(np.square(X_norm[:, :, 1:] - modele_ae.predict(X_norm, verbose=0)), axis=(1, 2))
-    mse_mass = np.mean(np.square(X_mass[:, :, 1:] - modele_ae.predict(X_mass, verbose=0)), axis=(1, 2))
-    mse_low = np.mean(np.square(X_low[:, :, 1:] - modele_ae.predict(X_low, verbose=0)), axis=(1, 2))
-    
-    # 2. Calcul des Intensités totales (Volume)
-    int_norm = np.sum(X_norm[:, :, 1], axis=1)
-    int_mass = np.sum(X_mass[:, :, 1], axis=1)
-    int_low = np.sum(X_low[:, :, 1], axis=1)
-    
-    # 3. Regroupement pour les métriques globales
-    y_true = np.array([0] * len(mse_norm) + [1] * (len(mse_mass) + len(mse_low)))
-    tous_mses = np.concatenate([mse_norm, mse_mass, mse_low])
-    tous_ints = np.concatenate([int_norm, int_mass, int_low])
-    y_pred = ((tous_mses > seuil_mse) | (tous_ints < seuil_int)).astype(int)
-    
-    print(f"\n{'='*50}")
-    print(f" RÉSULTATS GLOBAUX DU MODELE HYBRIDE (Seuil MSE = {seuil_mse}, Seuil Intensité = {seuil_int})")
-    print(f"{'='*50}")
-    print(classification_report(y_true, y_pred, target_names=["Normal", "Anomalie"]))
+    reconstruction = model.predict(X, verbose=0)
+    mse = np.mean(np.square(X[:, :, 1:] - reconstruction), axis=(1, 2))
+    total_intensity = np.sum(X[:, :, 1], axis=1)
+    return mse, total_intensity
 
-    
-    # CRÉATION DU DASHBOARD (2 lignes, 3 colonnes)
-    
-    fig, axes = plt.subplots(2, 3, figsize=(20, 12))
-    fig.suptitle("Tableau de Bord d'Évaluation Multiclasse - Modèle hybride", fontsize=16, fontweight='bold')
 
-    # 1. Histogramme des MSE (En haut à gauche)
-    axes[0, 0].hist(mse_norm, bins=30, alpha=0.6, color='blue', label='Saines')
-    axes[0, 0].hist(mse_low, bins=30, alpha=0.6, color='red', label='Low Intensity')
-    axes[0, 0].hist(mse_mass, bins=30, alpha=0.7, color='green', label='Mass Shift')
-    axes[0, 0].axvline(seuil_mse, color='black', lw=2, linestyle='--', label='Seuil MSE')
-    axes[0, 0].set_title("1. Distribution des Erreurs (MSE)")
-    axes[0, 0].set_xlabel("MSE (Échelle Log)")
-    axes[0, 0].set_ylabel("Nombre")
-    axes[0, 0].set_xscale('log')
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, alpha=0.3)
+def _collect_scores(model, X_norm, X_mass, X_low):
+    """Scores per group, plus the pooled labels (0 = normal, 1 = anomaly) and scores."""
+    mse_norm, int_norm = compute_scores(model, X_norm)
+    mse_mass, int_mass = compute_scores(model, X_mass)
+    mse_low, int_low = compute_scores(model, X_low)
 
-    #2. Scatter Plot : Intensité vs MSE (En haut au centre) 
+    return {
+        "mse": {"norm": mse_norm, "mass": mse_mass, "low": mse_low},
+        "int": {"norm": int_norm, "mass": int_mass, "low": int_low},
+        "y_true": np.array([0] * len(mse_norm) + [1] * (len(mse_mass) + len(mse_low))),
+        "all_mse": np.concatenate([mse_norm, mse_mass, mse_low]),
+        "all_int": np.concatenate([int_norm, int_mass, int_low]),
+    }
 
-    axes[0, 1].scatter(int_norm, mse_norm, color='blue', alpha=0.5, label='Saines', s=15)
-    axes[0, 1].scatter(int_low, mse_low, color='red', alpha=0.7, label='Low Intensity', s=15)
-    axes[0, 1].scatter(int_mass, mse_mass, color='green', alpha=0.7, label='Mass Shift', s=15)
-    axes[0, 1].axhline(seuil_mse, color='black', linestyle='--', label='Filtre IA (MSE)')
-    axes[0, 1].axvline(310, color='grey', linestyle='-.', label='Filtre Intensité (310)') # Remplace 310 par ton vrai seuil
-    axes[0, 1].set_title("2. Scatter Plot (Intensité vs MSE)")
-    axes[0, 1].set_xlabel("Intensité Totale")
-    axes[0, 1].set_ylabel("Erreur MSE (Échelle Log)")
-    axes[0, 1].set_yscale('log')
-    axes[0, 1].legend()
-    axes[0, 1].grid(True, alpha=0.3)
 
-    # 3. Boxplot des MSE (En haut à droite)
-    axes[0, 2].boxplot([mse_norm, mse_low, mse_mass], labels=['Saines', 'Low Int.', 'Mass Shift'])
-    axes[0, 2].axhline(seuil_mse, color='black', linestyle='--')
-    axes[0, 2].set_title("3. Boxplot des Erreurs (MSE)")
-    axes[0, 2].set_ylabel("MSE (Échelle Log)")
-    axes[0, 2].set_yscale('log')
-    axes[0, 2].grid(True, alpha=0.3)
+def _min_max(x):
+    """Rescale an array to [0, 1]."""
+    return (x - np.min(x)) / (np.max(x) - np.min(x) + 1e-10)
 
-    #  4. Courbes ROC Comparatives (En bas à gauche) 
-    # Étape A : Normalisation du MSE (0 à 1, où 1 = Forte Erreur / Anomalie)
-    mse_min, mse_max = np.min(tous_mses), np.max(tous_mses)
-    score_mse_norm = (tous_mses - mse_min) / (mse_max - mse_min + 1e-10)
-    # Étape B : Normalisation de l'Intensité (On inverse, car Basse Intensité = Anomalie)
-    int_invers = -tous_ints 
-    int_min, int_max = np.min(int_invers), np.max(int_invers)
-    score_int_norm = (int_invers - int_min) / (int_max - int_min + 1e-10)
-    # Étape C : Le Score Hybride (Le maximum des deux probabilités d'anomalie)
-    score_hybride = np.maximum(score_mse_norm, score_int_norm)
-    # Calcul des 3 courbes
-    fpr_ia, tpr_ia, _ = roc_curve(y_true, score_mse_norm)
-    auc_ia = roc_auc_score(y_true, score_mse_norm)
-    fpr_int, tpr_int, _ = roc_curve(y_true, score_int_norm)
-    auc_int = roc_auc_score(y_true, score_int_norm)
-    fpr_hyb, tpr_hyb, _ = roc_curve(y_true, score_hybride)
-    auc_hyb = roc_auc_score(y_true, score_hybride)
-    # Tracé des 3 courbes
-    axes[1, 0].plot(fpr_ia, tpr_ia, color='green', lw=2, alpha=0.7, label=f'IA (AUC = {auc_ia:.2f})')
-    axes[1, 0].plot(fpr_int, tpr_int, color='red', lw=2, alpha=0.7, label=f'Intensité (AUC = {auc_int:.2f})')
-    # La courbe hybride en bleu plus épais pour la mettre en valeur
-    axes[1, 0].plot(fpr_hyb, tpr_hyb, color='blue', lw=3, label=f'Hybride (AUC = {auc_hyb:.2f})')
-    axes[1, 0].plot([0, 1], [0, 1], color='grey', linestyle='--')
-    axes[1, 0].set_title("4. Comparatif des Courbes ROC")
-    axes[1, 0].set_xlabel("Faux Positifs")
-    axes[1, 0].set_ylabel("Vrais Positifs")
-    axes[1, 0].legend(loc="lower right")
-    axes[1, 0].grid(True, alpha=0.3)
 
-    #  5. Courbes Précision-Rappel Comparatives (En bas au centre) 
+# ====================================
+# Plots shared by both dashboards
+# ====================================
 
-    # Calcul des courbes PR et de l'Average Precision (AP)
-    prec_ia, rec_ia, _ = precision_recall_curve(y_true, score_mse_norm)
-    ap_ia = average_precision_score(y_true, score_mse_norm)
-    prec_int, rec_int, _ = precision_recall_curve(y_true, score_int_norm)
-    ap_int = average_precision_score(y_true, score_int_norm)
-    prec_hyb, rec_hyb, _ = precision_recall_curve(y_true, score_hybride)
-    ap_hyb = average_precision_score(y_true, score_hybride)
-    # Tracé des 3 courbes
-    axes[1, 1].plot(rec_ia, prec_ia, color='green', lw=2, alpha=0.7, label=f'IA (AP = {ap_ia:.2f})')
-    axes[1, 1].plot(rec_int, prec_int, color='red', lw=2, alpha=0.7, label=f'Intensité (AP = {ap_int:.2f})')
-    # La courbe hybride en bleu plus épais pour la mettre en valeur
-    axes[1, 1].plot(rec_hyb, prec_hyb, color='blue', lw=3, label=f'Hybride (AP = {ap_hyb:.2f})')
-    axes[1, 1].set_title("5. Comparatif Précision-Rappel")
-    axes[1, 1].set_xlabel("Rappel (Recall)")
-    axes[1, 1].set_ylabel("Précision")
-    # Pour la PR, la légende est souvent mieux en bas à gauche ou en haut à droite
-    axes[1, 1].legend(loc="lower left") 
-    axes[1, 1].grid(True, alpha=0.3)
+def _plot_top_row(axes, s, mse_threshold, int_threshold):
+    """Top row: MSE histogram, intensity-vs-MSE scatter plot, MSE boxplot."""
+    mse, tot = s["mse"], s["int"]
 
-    #  6. Matrice de Confusion (En bas à droite) 
+    # 1. MSE histogram
+    ax = axes[0]
+    ax.hist(mse["norm"], bins=30, alpha=0.6, color="blue", label="Healthy")
+    ax.hist(mse["low"], bins=30, alpha=0.6, color="red", label="Low Intensity")
+    ax.hist(mse["mass"], bins=30, alpha=0.7, color="green", label="Mass Shift")
+    ax.axvline(mse_threshold, color="black", lw=2, linestyle="--", label="MSE threshold")
+    ax.set_title("1. Error distribution (MSE)")
+    ax.set_xlabel("MSE (log scale)")
+    ax.set_ylabel("Count")
+    ax.set_xscale("log")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # 2. Scatter plot: intensity vs MSE
+    ax = axes[1]
+    ax.scatter(tot["norm"], mse["norm"], color="blue", alpha=0.5, label="Healthy", s=15)
+    ax.scatter(tot["low"], mse["low"], color="red", alpha=0.7, label="Low Intensity", s=15)
+    ax.scatter(tot["mass"], mse["mass"], color="green", alpha=0.7, label="Mass Shift", s=15)
+    ax.axhline(mse_threshold, color="black", linestyle="--", label="AI filter (MSE)")
+    ax.axvline(int_threshold, color="grey", linestyle="-.", label=f"Intensity filter ({int_threshold})")
+    ax.set_title("2. Scatter plot (intensity vs MSE)")
+    ax.set_xlabel("Total intensity")
+    ax.set_ylabel("MSE (log scale)")
+    ax.set_yscale("log")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # 3. MSE boxplot
+    ax = axes[2]
+    ax.boxplot([mse["norm"], mse["low"], mse["mass"]])
+    ax.set_xticklabels(["Healthy", "Low Int.", "Mass Shift"])
+    ax.axhline(mse_threshold, color="black", linestyle="--")
+    ax.set_title("3. Error boxplot (MSE)")
+    ax.set_ylabel("MSE (log scale)")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+
+
+def _plot_confusion_matrix(ax, y_true, y_pred, title):
     cm = confusion_matrix(y_true, y_pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Normal", "Anomalie"])
-    disp.plot(cmap=plt.cm.Blues, ax=axes[1, 2], colorbar=False)
-    axes[1, 2].set_title("6. Matrice de Confusion (Modèle hybride)")
+    ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=CLASS_LABELS).plot(
+        cmap=plt.cm.Blues, ax=ax, colorbar=False)
+    ax.set_title(title)
+
+
+def _print_report(title, y_true, y_pred):
+    print(f"\n{'=' * 50}")
+    print(f" {title}")
+    print(f"{'=' * 50}")
+    print(classification_report(y_true, y_pred, target_names=CLASS_LABELS))
+
+
+# ====================================
+# Dashboards
+# ====================================
+
+def evaluate_hybrid(X_norm, X_mass, X_low, model, mse_threshold=0.0004, int_threshold=310):
+    """
+    Evaluate the hybrid detector: a spectrum is flagged as an anomaly if its
+    reconstruction MSE is above `mse_threshold` OR its total intensity is
+    below `int_threshold`.
+
+    Shows a 6-panel dashboard comparing the AI score, the intensity score and
+    the hybrid score on healthy, mass-shift and low-intensity spectra.
+    """
+    print("Computing predictions (MSE and intensity)...")
+    s = _collect_scores(model, X_norm, X_mass, X_low)
+    y_true, all_mse, all_int = s["y_true"], s["all_mse"], s["all_int"]
+
+    y_pred = ((all_mse > mse_threshold) | (all_int < int_threshold)).astype(int)
+    _print_report(f"HYBRID MODEL RESULTS (MSE threshold = {mse_threshold}, "
+                  f"intensity threshold = {int_threshold})", y_true, y_pred)
+
+    fig, axes = plt.subplots(2, 3, figsize=(20, 12))
+    fig.suptitle("Multiclass Evaluation Dashboard - Hybrid model", fontsize=16, fontweight="bold")
+    _plot_top_row(axes[0], s, mse_threshold, int_threshold)
+
+    # Continuous scores in [0, 1] (1 = anomaly). Low intensity means anomaly,
+    # so the intensity is negated; the hybrid score is the maximum of the two.
+    score_ai = _min_max(all_mse)
+    score_int = _min_max(-all_int)
+    score_hybrid = np.maximum(score_ai, score_int)
+    scores = [
+        ("AI", score_ai, "green", 2, 0.7),
+        ("Intensity", score_int, "red", 2, 0.7),
+        ("Hybrid", score_hybrid, "blue", 3, 1.0),
+    ]
+
+    # 4. ROC curves
+    ax = axes[1, 0]
+    for name, score, color, lw, alpha in scores:
+        fpr, tpr, _ = roc_curve(y_true, score)
+        auc = roc_auc_score(y_true, score)
+        ax.plot(fpr, tpr, color=color, lw=lw, alpha=alpha, label=f"{name} (AUC = {auc:.2f})")
+    ax.plot([0, 1], [0, 1], color="grey", linestyle="--")
+    ax.set_title("4. ROC curves comparison")
+    ax.set_xlabel("False positive rate")
+    ax.set_ylabel("True positive rate")
+    ax.legend(loc="lower right")
+    ax.grid(True, alpha=0.3)
+
+    # 5. Precision-recall curves
+    ax = axes[1, 1]
+    for name, score, color, lw, alpha in scores:
+        precision, recall, _ = precision_recall_curve(y_true, score)
+        ap = average_precision_score(y_true, score)
+        ax.plot(recall, precision, color=color, lw=lw, alpha=alpha, label=f"{name} (AP = {ap:.2f})")
+    ax.set_title("5. Precision-recall comparison")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.legend(loc="lower left")
+    ax.grid(True, alpha=0.3)
+
+    # 6. Confusion matrix
+    _plot_confusion_matrix(axes[1, 2], y_true, y_pred, "6. Confusion matrix (hybrid model)")
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.92) 
+    plt.subplots_adjust(top=0.92)
     plt.show()
 
-def evaluer_ia_seule_multiclasse_ae(X_norm, X_mass, X_low, modele_ae, seuil_mse=0.0004, seuil_int=310):
-    """
-    Génère un tableau de bord à 6 graphiques pour analyser le comportement 
-    de l'IA face aux données Saines, Mass Shifts et Low Intensity.
-    """
-    print("Calcul des prédictions (MSE et Intensité) en cours...")
-    
-    # 1. Calcul des MSE (Erreur de forme)
-    mse_norm = np.mean(np.square(X_norm[:, :, 1:] - modele_ae.predict(X_norm, verbose=0)), axis=(1, 2))
-    mse_mass = np.mean(np.square(X_mass[:, :, 1:] - modele_ae.predict(X_mass, verbose=0)), axis=(1, 2))
-    mse_low = np.mean(np.square(X_low[:, :, 1:] - modele_ae.predict(X_low, verbose=0)), axis=(1, 2))
-    
-    # 2. Calcul des Intensités totales (Volume)
-    int_norm = np.sum(X_norm[:, :, 1], axis=1)
-    int_mass = np.sum(X_mass[:, :, 1], axis=1)
-    int_low = np.sum(X_low[:, :, 1], axis=1)
-    
-    # 3. Regroupement pour les métriques globales
-    y_true = np.array([0] * len(mse_norm) + [1] * (len(mse_mass) + len(mse_low)))
-    tous_mses = np.concatenate([mse_norm, mse_mass, mse_low])
-    y_pred = (tous_mses > seuil_mse).astype(int)
-    
-    print(f"\n{'='*50}")
-    print(f" RÉSULTATS GLOBAUX DE L'IA SEULE (Seuil MSE = {seuil_mse})")
-    print(f"{'='*50}")
-    print(classification_report(y_true, y_pred, target_names=["Normal", "Anomalie"]))
 
-    
-    # CRÉATION DU DASHBOARD (2 lignes, 3 colonnes)
-  
+def evaluate_autoencoder(X_norm, X_mass, X_low, model, mse_threshold=0.0004, int_threshold=310):
+    """
+    Evaluate the autoencoder alone: a spectrum is flagged as an anomaly if its
+    reconstruction MSE is above `mse_threshold`.
+
+    `int_threshold` is only used to draw the intensity filter on the scatter
+    plot; it does not influence the predictions.
+    """
+    print("Computing predictions (MSE and intensity)...")
+    s = _collect_scores(model, X_norm, X_mass, X_low)
+    y_true, all_mse = s["y_true"], s["all_mse"]
+
+    y_pred = (all_mse > mse_threshold).astype(int)
+    _print_report(f"AI-ONLY RESULTS (MSE threshold = {mse_threshold})", y_true, y_pred)
+
     fig, axes = plt.subplots(2, 3, figsize=(20, 12))
-    fig.suptitle("Tableau de Bord d'Évaluation Multiclasse - IA Seule", fontsize=16, fontweight='bold')
+    fig.suptitle("Multiclass Evaluation Dashboard - AI only", fontsize=16, fontweight="bold")
+    _plot_top_row(axes[0], s, mse_threshold, int_threshold)
 
-    # 1. Histogramme des MSE (En haut à gauche)
-    axes[0, 0].hist(mse_norm, bins=30, alpha=0.6, color='blue', label='Saines')
-    axes[0, 0].hist(mse_low, bins=30, alpha=0.6, color='red', label='Low Intensity')
-    axes[0, 0].hist(mse_mass, bins=30, alpha=0.7, color='green', label='Mass Shift')
-    axes[0, 0].axvline(seuil_mse, color='black', lw=2, linestyle='--', label='Seuil MSE')
-    axes[0, 0].set_title("1. Distribution des Erreurs (MSE)")
-    axes[0, 0].set_xlabel("MSE (Échelle Log)")
-    axes[0, 0].set_ylabel("Nombre")
-    axes[0, 0].set_xscale('log')
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, alpha=0.3)
+    # 4. ROC curve
+    ax = axes[1, 0]
+    fpr, tpr, _ = roc_curve(y_true, all_mse)
+    auc = roc_auc_score(y_true, all_mse)
+    ax.plot(fpr, tpr, color="blue", lw=2, label=f"AUC = {auc:.2f}")
+    ax.plot([0, 1], [0, 1], color="grey", linestyle="--")
+    ax.set_title("4. Overall ROC curve")
+    ax.set_xlabel("False positive rate")
+    ax.set_ylabel("True positive rate")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
-    #  2. Scatter Plot : Intensité vs MSE (En haut au centre)
-    
-    axes[0, 1].scatter(int_norm, mse_norm, color='blue', alpha=0.5, label='Saines', s=15)
-    axes[0, 1].scatter(int_low, mse_low, color='red', alpha=0.7, label='Low Intensity', s=15)
-    axes[0, 1].scatter(int_mass, mse_mass, color='green', alpha=0.7, label='Mass Shift', s=15)
-    axes[0, 1].axhline(seuil_mse, color='black', linestyle='--', label='Filtre IA (MSE)')
-    axes[0, 1].axvline(310, color='grey', linestyle='-.', label='Filtre Intensité (310)') # Remplace 310 par ton vrai seuil
-    axes[0, 1].set_title("2. Scatter Plot (Intensité vs MSE)")
-    axes[0, 1].set_xlabel("Intensité Totale")
-    axes[0, 1].set_ylabel("Erreur MSE (Échelle Log)")
-    axes[0, 1].set_yscale('log')
-    axes[0, 1].legend()
-    axes[0, 1].grid(True, alpha=0.3)
+    # 5. Precision-recall curve
+    ax = axes[1, 1]
+    precision, recall, _ = precision_recall_curve(y_true, all_mse)
+    ax.plot(recall, precision, color="darkorange", lw=2)
+    ax.set_title("5. Precision-recall curve")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.grid(True, alpha=0.3)
 
-    #  3. Boxplot des MSE (En haut à droite) 
-    axes[0, 2].boxplot([mse_norm, mse_low, mse_mass], labels=['Saines', 'Low Int.', 'Mass Shift'])
-    axes[0, 2].axhline(seuil_mse, color='black', linestyle='--')
-    axes[0, 2].set_title("3. Boxplot des Erreurs (MSE)")
-    axes[0, 2].set_ylabel("MSE (Échelle Log)")
-    axes[0, 2].set_yscale('log')
-    axes[0, 2].grid(True, alpha=0.3)
-
-    # 4. Courbe ROC Globale (En bas à gauche)
-    fpr, tpr, _ = roc_curve(y_true, tous_mses)
-    auc_score = roc_auc_score(y_true, tous_mses)
-    axes[1, 0].plot(fpr, tpr, color='blue', lw=2, label=f'AUC = {auc_score:.2f}')
-    axes[1, 0].plot([0, 1], [0, 1], color='grey', linestyle='--')
-    axes[1, 0].set_title("4. Courbe ROC Globale")
-    axes[1, 0].set_xlabel("Faux Positifs")
-    axes[1, 0].set_ylabel("Vrais Positifs")
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, alpha=0.3)
-
-    # 5. Courbe Précision-Rappel (En bas au centre)
-    precision, recall, _ = precision_recall_curve(y_true, tous_mses)
-    axes[1, 1].plot(recall, precision, color='darkorange', lw=2)
-    axes[1, 1].set_title("5. Courbe Précision-Rappel")
-    axes[1, 1].set_xlabel("Rappel (Recall)")
-    axes[1, 1].set_ylabel("Précision")
-    axes[1, 1].grid(True, alpha=0.3)
-
-    # 6. Matrice de Confusion (En bas à droite)
-    cm = confusion_matrix(y_true, y_pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Normal", "Anomalie"])
-    disp.plot(cmap=plt.cm.Blues, ax=axes[1, 2], colorbar=False)
-    axes[1, 2].set_title("6. Matrice de Confusion (IA Seule)")
+    # 6. Confusion matrix
+    _plot_confusion_matrix(axes[1, 2], y_true, y_pred, "6. Confusion matrix (AI only)")
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.92) 
-    plt.show()
-    
-    # 5. Matrice de Confusion
-    cm = confusion_matrix(y_true, y_pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Normal", "Anomalie"])
-    fig, ax = plt.subplots(figsize=(6, 4))
-    disp.plot(cmap=plt.cm.Blues, ax=ax)
-    plt.title("Matrice de Confusion Globale (IA Seule)")
+    plt.subplots_adjust(top=0.92)
     plt.show()

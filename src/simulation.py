@@ -1,24 +1,29 @@
+"""
+Simulation module.
+
+Generates artificial anomalies to complement the real ones.
+"""
+
 import numpy as np
 
-def simuler_mass_shifts(spectres_normaux, severite_min=0.2, severite_max=0.8):
+
+def simulate_mass_shifts(normal_spectra, min_severity=0.2, max_severity=0.8, seed=None):
     """
-    Prend un bloc de spectres normaux et applique un décalage m/z (Mass Shift).
-    Retourne un bloc de la même taille contenant les anomalies artificielles.
+    Apply a random m/z shift (mass shift) to a block of normal spectra.
+
+    Each spectrum is shifted by a random amount between `min_severity` and
+    `max_severity`, in a random direction. Returns a new block of the same
+    shape containing the artificial anomalies.
     """
-    print(f"Simulation de Mass Shifts (décalage entre {severite_min} et {severite_max} m/z)...")
-    
-    
-    spectres_simules = np.copy(spectres_normaux)
-    nb_spectres = spectres_simules.shape[0]
-    
-    for i in range(nb_spectres):
-        
-        shift = np.random.uniform(severite_min, severite_max)
-        
-        direction = np.random.choice([-1, 1])
-        
-    
-        spectres_simules[i, :, 0] += (shift * direction)
-        
-    print(f"{nb_spectres} anomalies de type Mass Shift générées !")
-    return spectres_simules
+    print(f"Simulating mass shifts (shift between {min_severity} and {max_severity} m/z)...")
+
+    rng = np.random.default_rng(seed)
+    simulated = np.copy(normal_spectra)
+    n_spectra = simulated.shape[0]
+
+    shifts = rng.uniform(min_severity, max_severity, size=n_spectra)
+    directions = rng.choice([-1, 1], size=n_spectra)
+    simulated[:, :, 0] += (shifts * directions)[:, None]
+
+    print(f"{n_spectra} mass shift anomalies generated!")
+    return simulated

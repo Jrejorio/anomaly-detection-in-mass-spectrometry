@@ -1,129 +1,113 @@
 """
-Module de Préparation des Données 
-Contient les fonctions pour charger, aligner, filtrer et normaliser les spectres de masse.
+Data preparation module.
+
+Functions to load, align, filter and scale mass spectra.
 """
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from scipy.interpolate import interp1d
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-def chargement_donnees(chemin):
+
+def load_spectra(folder):
     """
-    Charge tous les fichiers CSV d'un dossier dans un tenseur numpy 3D.
-    Applique le passage au log1p sur les intensités.
-    
-    Shape de sortie attendue : (nb_spectres, nb_points, 2)
+    Load every CSV file of a folder into a 3D numpy tensor.
+
+    Each CSV must have the columns `mz` and `spectrum`. Intensities are
+    transformed with log1p. Files whose layout differs from the first one
+    (different number of columns or rows) are skipped.
+
+    Returns an array of shape (n_spectra, n_points, 2), where the last axis
+    holds (m/z, log-intensity).
     """
-    chemin = Path(chemin)
-    fichiers = list(chemin.glob("*.csv"))
-    
-    if not fichiers:
-        raise ValueError(f"Aucun fichier CSV trouvé dans le dossier {chemin}")
+    folder = Path(folder)
+    files = sorted(folder.glob("*.csv"))
 
-    # On lit le premier fichier pour avoir la dimension de référence
-    df_test = pd.read_csv(fichiers[0])
-    nb_lignes = len(df_test)
-    nb_colonnes = len(df_test.columns)
+    if not files:
+        raise ValueError(f"No CSV file found in folder {folder}")
 
-    fichiers_valides = [f for f in fichiers if pd.read_csv(f, nrows=1).shape[1] == nb_colonnes]
-    
-    '''
-    for fichier in fichiers:
-        df = pd.read_csv(fichier)
-        if df.values.shape == (nb_lignes, nb_colonnes):
-            fichiers_valides.append(fichier)
-    '''
+    # The first file defines the reference layout
+    reference = pd.read_csv(files[0])
+    n_rows, n_cols = reference.shape
 
-    nb_fichiers = len(fichiers_valides)
-    d1 = np.zeros((nb_fichiers, nb_lignes))
-    d2 = np.zeros((nb_fichiers, nb_lignes))
+    print(f"Loading folder: {folder.name}")
 
-    print(f"Chargement du dossier : {chemin.name}")
-
-    for i, fichier in enumerate(tqdm(fichiers_valides, desc="Lecture des CSV", unit="fichier")):
+    spectra = []
+    for file in tqdm(files, desc="Reading CSV files", unit="file"):
         try:
-            df = pd.read_csv(fichier)
-            d1[i] = df['mz'].values
-            # Passage au log des intensités
-            d2[i] = np.log1p(df['spectrum'].values)
+            df = pd.read_csv(file)
+            if df.shape != (n_rows, n_cols):
+                raise ValueError(f"unexpected shape {df.shape}, expected {(n_rows, n_cols)}")
+            spectra.append(np.stack((df["mz"].values, np.log1p(df["spectrum"].values)), axis=-1))
         except Exception as e:
-            print(f"Erreur de lecture sur le fichier {fichier.name}: {e}")
+            print(f"Skipping {file.name}: {e}")
+
+    return np.stack(spectra, axis=0)
 
 
-    return np.stack((d1, d2), axis=-1)
-
-
-def lire_fenetres(chemin_fenetres):
+def read_windows(windows_file):
     """
-    Lit le fichier texte contenant les fenêtres m/z d'intérêt.
-    Retourne une liste de tuples (start, end).
+    Read the text file listing the m/z windows of interest.
+
+    Each line has the form `start;end`. Malformed lines are ignored.
+    Returns a list of (start, end) tuples.
     """
-    fenetres = []
-    with open(chemin_fenetres, 'r') as f:
+    windows = []
+    with open(windows_file, "r") as f:
         for line in f:
             line = line.strip()
-            # On ignore les lignes mal formatées
-            if ';' in line and not line.startswith('['):
-                parts = line.split(';')
+            if ";" in line and not line.startswith("["):
+                parts = line.split(";")
                 try:
-                    fenetres.append((float(parts[0]), float(parts[1])))
+                    windows.append((float(parts[0]), float(parts[1])))
                 except ValueError:
                     continue
-    return fenetres
+    return windows
 
 
-def aligner_et_filtrer_dataset(dataset_3d, mz_reference, chemin_fenetres):
+def align_and_filter_dataset(dataset, mz_reference, windows_file):
     """
-    1. Aligne l'intensité de chaque spectre sur l'axe mz_reference via interpolation.
-    2. Applique le filtrage pour ne garder que les points dans les fenêtres.
-    
-    Retourne un tenseur de taille fixe (N_spectres, N_points_filtres, 2).
+    1. Align each spectrum on the `mz_reference` axis by interpolation.
+    2. Keep only the points that fall inside the m/z windows of interest.
+
+    Returns a fixed-size tensor (n_spectra, n_filtered_points, 2).
     """
-    nb_spectres = dataset_3d.shape[0]
-    nb_points_ref = len(mz_reference)
-    
-    
-    data_alignee = np.zeros((nb_spectres, nb_points_ref, 2))
-    data_alignee[:, :, 0] = mz_reference 
-    
-    for i in range(nb_spectres):
-        current_mz = dataset_3d[i, :, 0]
-        current_int = dataset_3d[i, :, 1]
-        
-        f_interp = interp1d(current_mz, current_int, bounds_error=False, fill_value=0)
-        data_alignee[i, :, 1] = f_interp(mz_reference)
+    n_spectra = dataset.shape[0]
+    n_points_ref = len(mz_reference)
 
-    
-    fenetres = lire_fenetres(chemin_fenetres)
-    masque = np.zeros(nb_points_ref, dtype=bool)
-    
-    for start, end in fenetres:
-        masque |= (mz_reference >= start) & (mz_reference <= end)
+    aligned = np.zeros((n_spectra, n_points_ref, 2))
+    aligned[:, :, 0] = mz_reference
 
-    data_finale = data_alignee[:, masque, :]
-    return data_finale
+    for i in range(n_spectra):
+        interpolator = interp1d(dataset[i, :, 0], dataset[i, :, 1],
+                                bounds_error=False, fill_value=0)
+        aligned[i, :, 1] = interpolator(mz_reference)
+
+    mask = np.zeros(n_points_ref, dtype=bool)
+    for start, end in read_windows(windows_file):
+        mask |= (mz_reference >= start) & (mz_reference <= end)
+
+    return aligned[:, mask, :]
 
 
-def scaler_datasets(X_train, *autres_datasets):
+def scale_datasets(X_train, *other_datasets):
     """
-    Applique un MinMaxScaler sur le jeu d'entraînement, puis transforme les autres jeux.
-    Gère automatiquement le reshape 3D -> 2D -> 3D requis par scikit-learn.
+    Fit a MinMaxScaler on the training set, then apply it to the other sets.
+
+    Handles the 3D -> 2D -> 3D reshape required by scikit-learn.
+    Returns (X_train_scaled, [other scaled datasets], scaler).
     """
     scaler = MinMaxScaler()
-    
-    
-    X_train_2d = X_train.reshape(-1, 2)
-    X_train_scaled = scaler.fit_transform(X_train_2d).reshape(X_train.shape)
-    
-    
-    datasets_scaled = []
-    for dataset in autres_datasets:
-        dataset_2d = dataset.reshape(-1, 2)
-        dataset_scaled = scaler.transform(dataset_2d).reshape(dataset.shape)
-        datasets_scaled.append(dataset_scaled)
-        
-    return X_train_scaled, datasets_scaled, scaler
+
+    X_train_scaled = scaler.fit_transform(X_train.reshape(-1, 2)).reshape(X_train.shape)
+
+    others_scaled = [
+        scaler.transform(dataset.reshape(-1, 2)).reshape(dataset.shape)
+        for dataset in other_datasets
+    ]
+
+    return X_train_scaled, others_scaled, scaler

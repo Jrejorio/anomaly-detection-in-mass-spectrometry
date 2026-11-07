@@ -1,86 +1,95 @@
-# 🔬 Cassiopée — Détection d'anomalies en spectrométrie de masse
+# 🔬 Cassiopée — Anomaly Detection in Mass Spectrometry
 
-> Un auto-encodeur convolutif qui repère automatiquement les spectres de masse défectueux dans l'analyse de l'air expiré.
+> A convolutional autoencoder that automatically flags faulty mass spectra in exhaled-air analysis.
 
-Projet Cassiopée 2026 en partenariat avec l'**Hôpital Foch**.
+Cassiopée 2026 project, in partnership with **Hôpital Foch**.
 
-## 🎯 Contexte
+## 🎯 Context
 
-L'hôpital Foch analyse les composés organiques volatils (COV) de l'air expiré avec un spectromètre de masse **PTR-TOF-MS**, afin de diagnostiquer des maladies ou de suivre la réponse à des traitements.
+Hôpital Foch analyses the volatile organic compounds (VOCs) of exhaled air with a **PTR-TOF-MS** mass spectrometer, in order to diagnose diseases or monitor the response to treatments.
 
-Aujourd'hui, un **expert doit valider visuellement chaque acquisition**. Ce n'est pas réalisable dans les protocoles cliniques multi-centres.
+Today, an **expert must visually validate every acquisition**. This is not feasible in multi-centre clinical protocols.
 
-**Objectif :** détecter automatiquement les spectres anormaux, et vérifier que l'IA fait mieux que les contrôles classiques (seuil d'intensité, calibration standard).
+**Goal:** automatically detect abnormal spectra, and check that AI does better than classical controls (intensity threshold, standard calibration).
 
-Les anomalies recherchées :
+Anomalies targeted:
 
-| Anomalie | Description |
+| Anomaly | Description |
 |---|---|
-| **Mass shift** | Le spectre est décalé en m/z (mauvaise calibration) |
-| **Low intensity** | Signal global trop faible |
-| **Autres** | Absence de signal, artefacts divers… |
+| **Mass shift** | The spectrum is shifted along m/z (bad calibration) |
+| **Low intensity** | The overall signal is too weak |
+| **Others** | No signal at all, miscellaneous artefacts… |
 
-Plus de détails sur les données : [`docs/explication_donnees.pdf`](docs/explication_donnees.pdf).
+## 🧠 Method
 
-## 🧠 Méthode
-
-L'auto-encodeur est entraîné **uniquement sur des spectres normaux**. Face à un spectre anormal, il le reconstruit mal : l'erreur de reconstruction (MSE) sert de score d'anomalie.
+The autoencoder is trained **on normal spectra only**. Given an abnormal spectrum, it reconstructs it poorly: the reconstruction error (MSE) is used as the anomaly score.
 
 ```
-CSV bruts → Prétraitement → Auto-encodeur → Erreur de reconstruction → Normal / Anomalie
-            (log1p, fenêtres m/z, scaling)   (Conv1D)                  (seuil MSE + seuil d'intensité)
+Raw CSVs → Preprocessing → Autoencoder → Reconstruction error → Normal / Anomaly
+           (log1p, m/z windows, scaling)  (Conv1D)               (MSE threshold + intensity threshold)
 ```
 
-Deux détecteurs sont évalués :
-- **IA seule** : anomalie si `MSE > seuil_mse`
-- **Hybride** : anomalie si `MSE > seuil_mse` **ou** intensité totale `< seuil_int`
+Two detectors are evaluated:
+- **AI only**: anomaly if `MSE > mse_threshold`
+- **Hybrid**: anomaly if `MSE > mse_threshold` **or** total intensity `< int_threshold`
 
-Les mass shifts réels étant rares, des **mass shifts artificiels** sont simulés (décalage de 0,2 à 0,8 m/z) pour enrichir les tests.
+Real mass shifts are rare, so **artificial mass shifts** are simulated (shift of 0.2 to 0.8 m/z) to enrich the test set.
 
-## 📊 Résultats
+## 📊 Results
 
-![Tableau de bord d'évaluation](docs/evaluation_hybride.png)
+![Evaluation dashboard](docs/evaluation_hybride.png)
 
-Modèle hybride sur le jeu de test (390 spectres) :
+*The figure was generated before the code was translated, so its labels are in French; re-running `main.py` produces the English version.*
 
-| Métrique | Valeur |
+Hybrid model on the test set (390 spectra, thresholds chosen by hand):
+
+| Metric | Value |
 |---|---|
-| Anomalies détectées (rappel) | **255 / 262 (97 %)** |
-| Spectres normaux bien classés | 104 / 128 (81 %) |
-| Exactitude globale | 92 % |
-| AUC — IA seule | **0,87** |
-| AUC — intensité seule | 0,72 |
+| Anomalies detected (recall) | **255 / 262 (97%)** |
+| Normal spectra correctly classified | 104 / 128 (81%) |
+| Overall accuracy | 92% |
 
-L'IA seule surpasse le contrôle par seuil d'intensité (AUC 0,87 contre 0,72).
+Comparison of the continuous scores (ROC AUC):
 
-## 📁 Structure du projet
+| Score | AUC |
+|---|---|
+| AI only (reconstruction MSE) | **0.87** |
+| Intensity only | 0.72 |
+| Hybrid (max of both scores) | 0.73 |
+
+**Take-aways**
+- The autoencoder alone separates normal and abnormal spectra much better than the intensity check (AUC 0.87 vs 0.72), which is the main result of the project.
+- Combining both scores with a simple `max` does *not* improve the ranking (AUC 0.73 vs 0.87 for the AI alone). The hybrid rule is, however, useful at the chosen operating point: it catches 97% of the anomalies, at the cost of some false alarms on normal spectra.
+- These figures come from a small test set, with thresholds tuned on the same data, so they are optimistic and should be validated on fresh data.
+
+## 📁 Project structure
 
 ```
-Cassiope/
-├── main.py                 # Point d'entrée : données → entraînement → évaluation
+hopital-foch/
+├── main.py                 # Entry point: data → training → evaluation
 ├── src/
-│   ├── preprocessing.py    # Chargement CSV, alignement m/z, filtrage, scaling
-│   ├── simulation.py       # Simulation de mass shifts artificiels
-│   ├── models.py           # Architecture de l'auto-encodeur (Conv1D)
-│   └── evaluation.py       # Métriques et graphiques (ROC, PR, confusion…)
-├── config/fenetres.txt     # Fenêtres m/z conservées pour l'analyse
-├── models_saved/           # Poids entraînés (.h5)
-└── docs/                   # Présentation des données et figures
+│   ├── preprocessing.py    # CSV loading, m/z alignment, filtering, scaling
+│   ├── simulation.py       # Artificial mass-shift simulation
+│   ├── models.py           # Autoencoder architecture (Conv1D)
+│   └── evaluation.py       # Metrics and plots (ROC, PR, confusion matrix…)
+├── config/windows.txt      # m/z windows kept for the analysis
+├── docs/                   # Figures
+└── requirements.txt
 ```
 
-## 🚀 Utilisation
+## 🚀 Usage
 
 ```bash
-git clone <url-du-depot>
-cd Cassiope
+git clone https://github.com/Jrejorio/hopital-foch.git
+cd hopital-foch
 pip install -r requirements.txt
 python main.py
 ```
 
-- Les **poids du modèle** sont fournis dans `models_saved/` : s'ils existent, l'entraînement est sauté.
-- Les **spectres sont mis en cache** (`data/processed/*.npy`) à la première lecture, ce qui accélère les exécutions suivantes.
+- On the first run the model is **trained** (50 epochs) and its weights are saved to `models_saved/ae_v4_weights.h5`; later runs reload them instead of retraining.
+- Spectra are **cached** as `data/processed/*.npy` on first read, which speeds up later runs.
 
-> ⚠️ **Les données ne sont pas incluses** (données médicales de l'Hôpital Foch). Il faut les placer dans `data/` (`data/data/…`, `data/data2/…`) pour exécuter le projet, et créer le dossier `data/processed/`.
+> ⚠️ **The data and the trained weights are not included** (medical data from Hôpital Foch). To run the project, place the data in `data/` (`data/data/…`, `data/data2/…`).
 
 ## 🛠️ Technologies
 
